@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SubscriptionController;
+use App\Http\Controllers\WebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -72,5 +73,8 @@ if (app()->environment('local')) {
         ]);
     })->name('email.preview.payment-confirmation');
 }
+
+// Webhook route for payment gateway (e.g., Xendit)
+Route::post('/webhooks/payment', [WebhookController::class, 'handlePaymentWebhook']);
 
 require __DIR__.'/auth.php';
