@@ -17,8 +17,26 @@ class XenditWebhookController extends Controller
     public function handle(Request $request)
     {
         $payload = $request->all();
-        $token = $request->header('x-callback-token');
+        
+        // Try multiple possible header names for the callback token
+        $token = $request->header('x-callback-token') ?? 
+                 $request->header('X-Callback-Token') ?? 
+                 $request->header('x-callbacktoken') ?? 
+                 $request->header('X-CallbackToken') ?? 
+                 $request->header('callback-token') ?? 
+                 $request->header('Callback-Token');
+                 
         $eventType = $this->determineEventType($payload);
+
+        // Debug logging to see what's being received
+        Log::info('Webhook debug info', [
+            'all_headers' => $request->headers->all(),
+            'received_token' => $token,
+            'expected_token' => config('services.xendit.callback_token'),
+            'token_match' => $token === config('services.xendit.callback_token'),
+            'token_length_received' => strlen($token ?? ''),
+            'token_length_expected' => strlen(config('services.xendit.callback_token') ?? ''),
+        ]);
 
         // Save webhook data to local storage for debugging
         $this->saveWebhookToStorage($payload, $token, $eventType);
