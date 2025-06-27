@@ -217,4 +217,54 @@ class XenditWebhookTest extends TestCase
         $response->assertStatus(400);
         $response->assertJson(['error' => 'No invoice ID found']);
     }
+
+    public function test_webhook_handles_new_payload_format_with_items()
+    {
+        $payload = [
+            "id" => "685f24e1be0ebcaffb7dc1c4",
+            "items" => [
+                [
+                    "name" => "Pro Plan",
+                    "price" => 399,
+                    "category" => "Subscription",
+                    "quantity" => 1
+                ]
+            ],
+            "amount" => 399,
+            "status" => "PAID",
+            "created" => "2025-06-27T23:10:25.958Z",
+            "is_high" => false,
+            "paid_at" => "2025-06-27T23:10:39.163Z",
+            "updated" => "2025-06-27T23:10:41.463Z",
+            "user_id" => "684060e43f893d8cba58d2d6",
+            "currency" => "PHP",
+            "payment_id" => "ewc_dfec4f18-32c4-4b3a-a84b-9e9849af78d0",
+            "description" => "Subscription to Pro Plan",
+            "external_id" => "subscription-685f24e26ff80",
+            "paid_amount" => 399,
+            "ewallet_type" => "GCASH",
+            "merchant_name" => "Qricket",
+            "payment_method" => "EWALLET",
+            "payment_channel" => "GCASH",
+            "payment_method_id" => "pm-07293af4-3028-462d-803c-21bdf53c8d0f"
+        ];
+
+        $response = $this->postJson('/xendit/webhook', $payload, [
+            'x-callback-token' => config('services.xendit.callback_token')
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertJson(['status' => 'success']);
+
+        // Check that subscription was created with pro plan
+        $this->assertDatabaseHas('subscriptions', [
+            'xendit_invoice_id' => '685f24e1be0ebcaffb7dc1c4',
+            'xendit_payment_id' => 'ewc_dfec4f18-32c4-4b3a-a84b-9e9849af78d0',
+            'amount' => 399,
+            'currency' => 'PHP',
+            'plan_id' => 'pro',
+            'status' => 'active',
+            'payment_status' => 'paid'
+        ]);
+    }
 } 

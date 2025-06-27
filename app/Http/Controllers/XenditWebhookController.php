@@ -209,8 +209,11 @@ class XenditWebhookController extends Controller
         Log::info('Processing invoice.paid event', [
             'invoice_id' => $payload['id'] ?? 'unknown',
             'external_id' => $payload['external_id'] ?? 'unknown',
+            'payment_id' => $payload['payment_id'] ?? 'unknown',
             'status' => $payload['status'] ?? 'unknown',
-            'amount' => $payload['amount'] ?? 'unknown'
+            'amount' => $payload['amount'] ?? 'unknown',
+            'payment_method' => $payload['payment_method'] ?? 'unknown',
+            'ewallet_type' => $payload['ewallet_type'] ?? 'unknown'
         ]);
 
         // Extract invoice ID from different possible locations
@@ -271,7 +274,9 @@ class XenditWebhookController extends Controller
                 'payment_status' => 'paid',
                 'xendit_payment_id' => $payload['payment_id'] ?? $payload['id'] ?? null,
                 'paid_amount' => $payload['paid_amount'] ?? $payload['amount'] ?? null,
-                'paid_at' => $payload['paid_at'] ?? null
+                'paid_at' => $payload['paid_at'] ?? null,
+                'payment_method' => $payload['payment_method'] ?? 'unknown',
+                'ewallet_type' => $payload['ewallet_type'] ?? 'unknown'
             ]);
 
             // Send payment confirmation email
@@ -607,11 +612,33 @@ class XenditWebhookController extends Controller
                         ]);
                     }
                 }
+            } else {
+                // Try to find user by external_id pattern or user_id
+                $user = $this->findUserFromWebhookData($payload);
             }
 
-            // Determine plan from amount
+            // Determine plan from amount or items array
             $amount = $payload['amount'] ?? $payload['paid_amount'] ?? null;
             $planId = $this->inferPlanFromAmount($amount);
+            
+            // If we have items array, try to get plan from there
+            if (isset($payload['items']) && is_array($payload['items']) && !empty($payload['items'])) {
+                $item = $payload['items'][0]; // Get first item
+                $itemName = strtolower($item['name'] ?? '');
+                
+                if (strpos($itemName, 'basic') !== false) {
+                    $planId = 'basic';
+                } elseif (strpos($itemName, 'pro') !== false) {
+                    $planId = 'pro';
+                } elseif (strpos($itemName, 'enterprise') !== false) {
+                    $planId = 'enterprise';
+                }
+                
+                Log::info('Plan determined from items array', [
+                    'item_name' => $item['name'] ?? 'unknown',
+                    'inferred_plan' => $planId
+                ]);
+            }
             
             // Extract invoice ID from various locations
             $invoiceId = $payload['id'] ?? $payload['external_id'] ?? null;
@@ -642,7 +669,9 @@ class XenditWebhookController extends Controller
                 'invoice_id' => $invoiceId,
                 'payment_id' => $paymentId,
                 'amount' => $amount,
-                'currency' => $currency
+                'currency' => $currency,
+                'payment_method' => $payload['payment_method'] ?? 'unknown',
+                'ewallet_type' => $payload['ewallet_type'] ?? 'unknown'
             ]);
 
             return $subscription;
@@ -788,6 +817,63 @@ class XenditWebhookController extends Controller
                 'error' => $e->getMessage(),
                 'payload' => $payload
             ]);
+        }
+    }
+
+    /**
+     * Find user from webhook data
+     */
+    private function findUserFromWebhookData($payload)
+    {
+        try {
+            // Try to find user by external_id if it contains user information
+            $externalId = $payload['external_id'] ?? '';
+            if (strpos($externalId, 'subscription-') === 0) {
+                // Extract user ID from external_id if it follows a pattern
+                $parts = explode('-', $externalId);
+                if (count($parts) >= 2) {
+                    $potentialUserId = $parts[1];
+                    Log::info('Attempting to find user by external_id pattern', [
+                        'external_id' => $externalId,
+                        'potential_user_id' => $potentialUserId
+                    ]);
+                }
+            }
+
+            // Try to find user by user_id if present
+            $xenditUserId = $payload['user_id'] ?? null;
+            if ($xenditUserId) {
+                Log::info('Attempting to find user by Xendit user_id', [
+                    'xendit_user_id' => $xenditUserId
+                ]);
+                
+                // You might want to store Xendit user_id in your users table
+                // For now, we'll just log it
+            }
+
+            // Try to find user by looking for existing subscriptions with this invoice
+            $invoiceId = $payload['id'] ?? $payload['external_id'] ?? null;
+            if ($invoiceId) {
+                $existingSubscription = Subscription::where('xendit_invoice_id', $invoiceId)->first();
+                if ($existingSubscription && $existingSubscription->user) {
+                    Log::info('Found existing user from subscription', [
+                        'user_id' => $existingSubscription->user->id,
+                        'invoice_id' => $invoiceId
+                    ]);
+                    return $existingSubscription->user;
+                }
+            }
+
+            // If no user found, create a placeholder user
+            Log::info('No existing user found, will create placeholder user');
+            return null;
+
+        } catch (\Exception $e) {
+            Log::error('Error finding user from webhook data', [
+                'error' => $e->getMessage(),
+                'payload' => $payload
+            ]);
+            return null;
         }
     }
 }
