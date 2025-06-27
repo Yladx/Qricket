@@ -596,7 +596,7 @@ class XenditWebhookController extends Controller
                 'full_name' => $fullName
             ]);
 
-            // Find or create user
+            // Find or create user - ALWAYS ensure we have a user
             $user = null;
             if ($userEmail) {
                 $user = User::where('email', $userEmail)->first();
@@ -633,6 +633,27 @@ class XenditWebhookController extends Controller
             } else {
                 // Try to find user by external_id pattern or user_id
                 $user = $this->findUserFromWebhookData($payload);
+                
+                // If still no user, create a placeholder user
+                if (!$user) {
+                    $user = User::create([
+                        'first_name' => $firstName,
+                        'last_name' => $lastName,
+                        'email' => 'webhook-user-' . uniqid() . '@placeholder.com',
+                        'password' => bcrypt(str_random(12)),
+                    ]);
+                    
+                    Log::info('Placeholder user created from webhook', [
+                        'user_id' => $user->id,
+                        'name' => $fullName
+                    ]);
+                }
+            }
+
+            // Ensure we have a user at this point
+            if (!$user) {
+                Log::error('Failed to create or find user for subscription', ['payload' => $payload]);
+                return null;
             }
 
             // Determine plan from amount or items array
@@ -679,7 +700,7 @@ class XenditWebhookController extends Controller
             }
 
             $subscription = Subscription::create([
-                'user_id' => $user ? $user->id : null,
+                'user_id' => $user->id, // Always ensure we have a user_id
                 'plan_id' => $planId,
                 'status' => 'active',
                 'xendit_invoice_id' => $invoiceId,
@@ -907,116 +928,35 @@ class XenditWebhookController extends Controller
     }
 
     /**
-     * Create a minimal subscription to prevent webhook failure
+     * Create minimal subscription as fallback
      */
     private function createMinimalSubscription($payload)
     {
         try {
-            // Extract user information from different possible locations
-            $userEmail = $payload['payer_email'] ?? $payload['customer']['email'] ?? null;
-            
-            // Extract customer name from various possible locations
-            $firstName = $payload['customer']['given_names'] ?? $payload['customer']['first_name'] ?? '';
-            $lastName = $payload['customer']['surname'] ?? $payload['customer']['last_name'] ?? '';
-            
-            // If no separate first/last name, try to split full name
-            if (empty($firstName) && empty($lastName)) {
-                $fullName = $payload['customer']['name'] ?? $payload['customer']['full_name'] ?? '';
-                if (!empty($fullName)) {
-                    $nameParts = explode(' ', trim($fullName), 2);
-                    $firstName = $nameParts[0] ?? '';
-                    $lastName = $nameParts[1] ?? '';
-                }
-            }
-
-            // Ensure we have at least some name data
-            if (empty($firstName) && empty($lastName)) {
-                $firstName = 'Unknown';
-                $lastName = 'User';
-            }
-
-            $fullName = trim($firstName . ' ' . $lastName);
-
-            Log::info('Extracted user data from webhook', [
-                'email' => $userEmail,
-                'first_name' => $firstName,
-                'last_name' => $lastName,
-                'full_name' => $fullName
+            // Always create a user for minimal subscription
+            $user = User::create([
+                'first_name' => 'Webhook',
+                'last_name' => 'User',
+                'email' => 'webhook-user-' . uniqid() . '@placeholder.com',
+                'password' => bcrypt(str_random(12)),
             ]);
 
-            // Find or create user
-            $user = null;
-            if ($userEmail) {
-                $user = User::where('email', $userEmail)->first();
-                
-                if (!$user) {
-                    // Create user if doesn't exist
-                    $user = User::create([
-                        'first_name' => $firstName,
-                        'last_name' => $lastName,
-                        'email' => $userEmail,
-                        'password' => bcrypt(str_random(12)), // Temporary password
-                    ]);
-                    
-                    Log::info('User created from webhook', [
-                        'user_id' => $user->id,
-                        'email' => $userEmail,
-                        'name' => $fullName
-                    ]);
-                } else {
-                    // Update existing user's name if it was incomplete
-                    if (empty($user->first_name) || empty($user->last_name)) {
-                        $user->update([
-                            'first_name' => $firstName,
-                            'last_name' => $lastName,
-                        ]);
-                        
-                        Log::info('Updated existing user name from webhook', [
-                            'user_id' => $user->id,
-                            'email' => $userEmail,
-                            'name' => $fullName
-                        ]);
-                    }
-                }
-            } else {
-                // Try to find user by external_id pattern or user_id
-                $user = $this->findUserFromWebhookData($payload);
-            }
+            Log::info('Minimal user created for subscription', [
+                'user_id' => $user->id,
+                'invoice_id' => $payload['id'] ?? 'unknown'
+            ]);
 
-            // Determine plan from amount or items array
-            $amount = $payload['amount'] ?? $payload['paid_amount'] ?? null;
+            // Determine plan from amount
+            $amount = $payload['amount'] ?? $payload['paid_amount'] ?? 0;
             $planId = $this->inferPlanFromAmount($amount);
-            
-            // If we have items array, try to get plan from there
-            if (isset($payload['items']) && is_array($payload['items']) && !empty($payload['items'])) {
-                $item = $payload['items'][0]; // Get first item
-                $itemName = strtolower($item['name'] ?? '');
-                
-                if (strpos($itemName, 'basic') !== false) {
-                    $planId = 'basic';
-                } elseif (strpos($itemName, 'pro') !== false) {
-                    $planId = 'pro';
-                } elseif (strpos($itemName, 'enterprise') !== false) {
-                    $planId = 'enterprise';
-                }
-                
-                Log::info('Plan determined from items array', [
-                    'item_name' => $item['name'] ?? 'unknown',
-                    'inferred_plan' => $planId
-                ]);
-            }
-            
-            // Extract invoice ID from various locations
-            $invoiceId = $payload['id'] ?? $payload['external_id'] ?? null;
-            
-            // Extract payment ID from various locations
-            $paymentId = $payload['payment_id'] ?? $payload['id'] ?? null;
 
-            // Extract currency
+            // Extract basic information
+            $invoiceId = $payload['id'] ?? null;
+            $paymentId = $payload['payment_id'] ?? null;
             $currency = $payload['currency'] ?? 'PHP';
 
             $subscription = Subscription::create([
-                'user_id' => $user ? $user->id : null,
+                'user_id' => $user->id, // Always ensure we have a user_id
                 'plan_id' => $planId,
                 'status' => 'active',
                 'xendit_invoice_id' => $invoiceId,
@@ -1028,16 +968,12 @@ class XenditWebhookController extends Controller
                 'payment_status' => 'paid',
             ]);
 
-            Log::info('Subscription created from webhook', [
+            Log::info('Minimal subscription created', [
                 'subscription_id' => $subscription->id,
                 'user_id' => $subscription->user_id,
                 'plan_id' => $subscription->plan_id,
                 'invoice_id' => $invoiceId,
-                'payment_id' => $paymentId,
-                'amount' => $amount,
-                'currency' => $currency,
-                'payment_method' => $payload['payment_method'] ?? 'unknown',
-                'ewallet_type' => $payload['ewallet_type'] ?? 'unknown'
+                'amount' => $amount
             ]);
 
             return $subscription;
