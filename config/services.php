@@ -42,8 +42,8 @@ return [
 
     'xendit' => [
         'api_key' => env('XENDIT_API_KEY'),
-        'callback_token' => env('XENDIT_CALLBACK_TOKEN'),
-        'webhook_url' => env('XENDIT_WEBHOOK_URL'),
+        'callback_token' => env('XENDIT_WEBHOOK_URL'),
+        'webhook_url' => env('XENDIT_WEBHOOK_ENDPOINT', 'https://sandybrown-trout-800173.hostingersite.com/xendit/webhook'),
     ],
 
 ];

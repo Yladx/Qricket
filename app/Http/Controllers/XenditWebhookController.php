@@ -41,12 +41,7 @@ class XenditWebhookController extends Controller
         // Save webhook data to local storage for debugging
         $this->saveWebhookToStorage($payload, $token, $eventType);
 
-        // TODO: Implement proper Xendit webhook signature verification
-        // For now, we'll accept all webhooks to get the system working
-        // In production, you should verify the webhook signature using Xendit's public key
-        
-        // Validate webhook token (temporarily disabled)
-        /*
+        // Validate webhook token
         if ($token !== config('services.xendit.callback_token')) {
             Log::warning('Invalid webhook token received', [
                 'received_token' => $token,
@@ -56,7 +51,6 @@ class XenditWebhookController extends Controller
             ]);
             return response()->json(['error' => 'Invalid token'], 401);
         }
-        */
 
         Log::info('Xendit webhook received', [
             'event_type' => $eventType,
