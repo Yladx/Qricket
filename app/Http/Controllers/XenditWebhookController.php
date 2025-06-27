@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Http;
 
 class XenditWebhookController extends Controller
 {
@@ -61,8 +62,6 @@ class XenditWebhookController extends Controller
             switch ($eventType) {
                 case 'invoice.paid':
                     return $this->handleInvoicePaid($payload);
-                case 'invoice.paid_after_expiry':
-                    return $this->handleInvoicePaidAfterExpiry($payload);
                 case 'invoice.expired':
                     return $this->handleInvoiceExpired($payload);
                 case 'invoice.cancelled':
@@ -72,6 +71,9 @@ class XenditWebhookController extends Controller
                     return $this->handlePaymentCompleted($payload);
                 case 'payment.failed':
                     return $this->handlePaymentFailed($payload);
+                case 'payment.after_expiry':
+                case 'payment.received_after_expiry':
+                    return $this->handlePaymentAfterExpiry($payload);
                 case 'disbursement.completed':
                     return $this->handleDisbursementCompleted($payload);
                 case 'disbursement.failed':
@@ -115,16 +117,6 @@ class XenditWebhookController extends Controller
         if ($type === 'INVOICE') {
             switch ($status) {
                 case 'PAID':
-                    // Check if this is a payment after expiry
-                    if (isset($payload['paid_at']) && isset($payload['created'])) {
-                        $paidAt = \Carbon\Carbon::parse($payload['paid_at']);
-                        $createdAt = \Carbon\Carbon::parse($payload['created']);
-                        
-                        // If paid_at is significantly after created, it might be after expiry
-                        if ($paidAt->diffInHours($createdAt) > 24) {
-                            return 'invoice.paid_after_expiry';
-                        }
-                    }
                     return 'invoice.paid';
                 case 'EXPIRED':
                     return 'invoice.expired';
@@ -172,17 +164,27 @@ class XenditWebhookController extends Controller
             'invoice_id' => $payload['id'] ?? 'unknown',
             'external_id' => $payload['external_id'] ?? 'unknown',
             'status' => $payload['status'] ?? 'unknown',
-            'amount' => $payload['amount'] ?? 'unknown',
-            'paid_amount' => $payload['paid_amount'] ?? 'unknown',
-            'payer_email' => $payload['payer_email'] ?? 'unknown'
+            'amount' => $payload['amount'] ?? 'unknown'
         ]);
 
-        // Extract invoice ID from various possible locations
+        // Extract invoice ID from different possible locations
         $invoiceId = $payload['id'] ?? $payload['external_id'] ?? null;
         
         if (!$invoiceId) {
-            Log::error('No invoice ID found in invoice.paid payload', ['payload' => $payload]);
+            Log::error('No invoice ID found in invoice paid payload', ['payload' => $payload]);
             return response()->json(['error' => 'No invoice ID found'], 400);
+        }
+
+        // Verify payment status with Xendit API
+        $verifiedStatus = $this->verifyPaymentStatusWithXendit($invoiceId);
+        
+        if ($verifiedStatus !== 'PAID' && $verifiedStatus !== 'SUCCEEDED' && $verifiedStatus !== 'COMPLETED') {
+            Log::warning('Payment status verification failed', [
+                'invoice_id' => $invoiceId,
+                'webhook_status' => $payload['status'] ?? 'unknown',
+                'verified_status' => $verifiedStatus
+            ]);
+            return response()->json(['error' => 'Payment verification failed'], 400);
         }
 
         // Find or create subscription
@@ -215,7 +217,6 @@ class XenditWebhookController extends Controller
                 'status' => 'active',
                 'payment_status' => 'paid',
                 'xendit_payment_id' => $payload['payment_id'] ?? $payload['id'] ?? null,
-                'amount' => $payload['paid_amount'] ?? $payload['amount'] ?? $subscription->amount,
             ]);
 
             Log::info('Subscription payment status updated successfully', [
@@ -317,6 +318,78 @@ class XenditWebhookController extends Controller
     }
 
     /**
+     * Handle payment.after_expiry event
+     */
+    private function handlePaymentAfterExpiry($payload)
+    {
+        Log::info('Processing payment received after expiry', [
+            'payment_id' => $payload['id'] ?? 'unknown',
+            'external_id' => $payload['external_id'] ?? 'unknown',
+            'status' => $payload['status'] ?? 'unknown',
+            'amount' => $payload['amount'] ?? 'unknown',
+            'paid_amount' => $payload['paid_amount'] ?? 'unknown'
+        ]);
+
+        // Extract invoice ID from different possible locations
+        $invoiceId = $payload['id'] ?? $payload['external_id'] ?? null;
+        
+        if (!$invoiceId) {
+            Log::error('No invoice ID found in payment after expiry payload', ['payload' => $payload]);
+            return response()->json(['error' => 'No invoice ID found'], 400);
+        }
+
+        // Find existing subscription
+        $subscription = Subscription::where('xendit_invoice_id', $invoiceId)->first();
+        
+        if (!$subscription) {
+            // Create new subscription if none exists
+            $subscription = $this->createSubscriptionFromWebhook($payload);
+        }
+
+        if (!$subscription) {
+            Log::error('Failed to create or find subscription for payment after expiry', [
+                'invoice_id' => $invoiceId,
+                'payload' => $payload
+            ]);
+            return response()->json(['error' => 'Subscription not found'], 404);
+        }
+
+        // Update subscription status to active (payment was received)
+        try {
+            $subscription->update([
+                'status' => 'active',
+                'payment_status' => 'paid',
+                'xendit_payment_id' => $payload['payment_id'] ?? $payload['id'] ?? null,
+            ]);
+
+            Log::info('Subscription activated after late payment', [
+                'subscription_id' => $subscription->id,
+                'user_id' => $subscription->user_id,
+                'payment_status' => 'paid',
+                'xendit_payment_id' => $payload['payment_id'] ?? $payload['id'] ?? null,
+                'paid_amount' => $payload['paid_amount'] ?? $payload['amount'] ?? null,
+                'paid_at' => $payload['paid_at'] ?? null
+            ]);
+
+            // Send payment confirmation email
+            if ($subscription->user) {
+                $this->sendPaymentConfirmationEmail($subscription);
+            }
+
+            return response()->json(['status' => 'success']);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to update subscription for late payment', [
+                'subscription_id' => $subscription->id,
+                'xendit_invoice_id' => $invoiceId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json(['error' => 'Failed to update subscription'], 500);
+        }
+    }
+
+    /**
      * Handle disbursement.completed event
      */
     private function handleDisbursementCompleted($payload)
@@ -371,78 +444,48 @@ class XenditWebhookController extends Controller
     }
 
     /**
-     * Handle invoice paid after expiry event
+     * Verify payment status with Xendit API
      */
-    private function handleInvoicePaidAfterExpiry($payload)
+    private function verifyPaymentStatusWithXendit($invoiceId)
     {
-        Log::info('Processing invoice.paid_after_expiry event', [
-            'invoice_id' => $payload['id'] ?? 'unknown',
-            'external_id' => $payload['external_id'] ?? 'unknown',
-            'status' => $payload['status'] ?? 'unknown',
-            'amount' => $payload['amount'] ?? 'unknown',
-            'paid_amount' => $payload['paid_amount'] ?? 'unknown',
-            'payer_email' => $payload['payer_email'] ?? 'unknown',
-            'created' => $payload['created'] ?? 'unknown',
-            'paid_at' => $payload['paid_at'] ?? 'unknown'
-        ]);
-
-        // Extract invoice ID from various possible locations
-        $invoiceId = $payload['id'] ?? $payload['external_id'] ?? null;
-        
-        if (!$invoiceId) {
-            Log::error('No invoice ID found in invoice.paid_after_expiry payload', ['payload' => $payload]);
-            return response()->json(['error' => 'No invoice ID found'], 400);
-        }
-
-        // Find or create subscription
-        $subscription = Subscription::where('xendit_invoice_id', $invoiceId)->first();
-        
-        if (!$subscription) {
-            $subscription = $this->createSubscriptionFromWebhook($payload);
-        }
-
-        if (!$subscription) {
-            Log::error('Failed to create or find subscription for paid after expiry invoice', [
-                'invoice_id' => $invoiceId,
-                'payload' => $payload
-            ]);
-            return response()->json(['error' => 'Subscription not found'], 404);
-        }
-
-        // Update subscription status to active (even though it was paid after expiry)
         try {
-            $subscription->update([
-                'status' => 'active',
-                'payment_status' => 'paid',
-                'xendit_payment_id' => $payload['payment_id'] ?? $payload['id'] ?? null,
-                'amount' => $payload['paid_amount'] ?? $payload['amount'] ?? $subscription->amount,
-            ]);
+            Log::info('Verifying payment status with Xendit API', ['invoice_id' => $invoiceId]);
 
-            Log::info('Subscription payment status updated successfully (paid after expiry)', [
-                'subscription_id' => $subscription->id,
-                'user_id' => $subscription->user_id,
-                'payment_status' => 'paid',
-                'xendit_payment_id' => $payload['payment_id'] ?? $payload['id'] ?? null,
-                'paid_amount' => $payload['paid_amount'] ?? $payload['amount'] ?? null,
-                'paid_at' => $payload['paid_at'] ?? null,
-                'created' => $payload['created'] ?? null
-            ]);
+            $response = Http::withBasicAuth(config('services.xendit.api_key'), '')
+                ->timeout(30)
+                ->get("https://api.xendit.co/v2/invoices/{$invoiceId}");
 
-            // Send payment confirmation email
-            if ($subscription->user) {
-                $this->sendPaymentConfirmationEmail($subscription);
+            if ($response->successful()) {
+                $invoiceData = $response->json();
+                $status = $invoiceData['status'] ?? 'unknown';
+                
+                Log::info('Payment status verified with Xendit', [
+                    'invoice_id' => $invoiceId,
+                    'status' => $status,
+                    'amount' => $invoiceData['amount'] ?? null,
+                    'currency' => $invoiceData['currency'] ?? null
+                ]);
+                
+                return strtoupper($status);
             }
 
-            return response()->json(['status' => 'success']);
+            Log::warning('Failed to verify payment status with Xendit', [
+                'invoice_id' => $invoiceId,
+                'response_status' => $response->status(),
+                'response_body' => $response->body(),
+                'response_headers' => $response->headers()
+            ]);
+
+            // If we can't verify with API, try to infer from webhook data
+            return 'unknown';
 
         } catch (\Exception $e) {
-            Log::error('Failed to update subscription payment status (paid after expiry)', [
-                'subscription_id' => $subscription->id,
-                'xendit_invoice_id' => $invoiceId,
+            Log::error('Exception while verifying payment status with Xendit', [
+                'invoice_id' => $invoiceId,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-            return response()->json(['error' => 'Failed to update subscription'], 500);
+            return 'unknown';
         }
     }
 
@@ -452,7 +495,7 @@ class XenditWebhookController extends Controller
     private function createSubscriptionFromWebhook($payload)
     {
         try {
-            // Extract user information from various possible locations
+            // Extract user information from different possible locations
             $userEmail = $payload['payer_email'] ?? $payload['customer']['email'] ?? null;
             
             // Extract customer name from various possible locations
@@ -521,7 +564,7 @@ class XenditWebhookController extends Controller
             }
 
             // Determine plan from amount
-            $amount = $payload['paid_amount'] ?? $payload['amount'] ?? null;
+            $amount = $payload['amount'] ?? $payload['paid_amount'] ?? null;
             $planId = $this->inferPlanFromAmount($amount);
             
             // Extract invoice ID from various locations
@@ -573,27 +616,19 @@ class XenditWebhookController extends Controller
      */
     private function inferPlanFromAmount($amount)
     {
-        // Convert amount to float and handle different formats
-        $amount = (float) $amount;
-        
-        // Handle amounts in cents (common in payment systems)
-        if ($amount > 1000) {
-            // If amount is very large, it might be in cents
-            $amountInPHP = $amount / 100;
-        } else {
-            $amountInPHP = $amount;
-        }
-
-        $planId = match(true) {
-            $amountInPHP == 199 || $amountInPHP == 199.0 => 'basic',
-            $amountInPHP == 399 || $amountInPHP == 399.0 => 'pro',
-            $amountInPHP == 999 || $amountInPHP == 999.0 => 'enterprise',
+        $planId = match((float)$amount) {
+            199.0, 199 => 'basic',
+            399.0, 399 => 'pro',
+            999.0, 999 => 'enterprise',
+            // Handle amounts in different currencies (e.g., IDR, PHP)
+            50000.0, 50000 => 'basic', // IDR equivalent
+            100000.0, 100000 => 'pro', // IDR equivalent
+            250000.0, 250000 => 'enterprise', // IDR equivalent
             default => 'unknown'
         };
 
         Log::info('Plan inferred from amount', [
-            'original_amount' => $amount,
-            'amount_in_php' => $amountInPHP,
+            'amount' => $amount,
             'inferred_plan' => $planId
         ]);
 
