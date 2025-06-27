@@ -91,15 +91,6 @@ class XenditWebhookController extends Controller
                         return $this->handleInvoicePaid($payload);
                     }
                     
-                    // Ultimate fallback: If we have any payment-related data, try to process it
-                    if (isset($payload['payment_id']) || isset($payload['paid_amount']) || isset($payload['paid_at'])) {
-                        Log::info('Treating payload with payment data as invoice.paid (ultimate fallback)', [
-                            'event_type' => $eventType,
-                            'payload' => $payload
-                        ]);
-                        return $this->handleInvoicePaid($payload);
-                    }
-                    
                     Log::info('Unhandled webhook event type', [
                         'event_type' => $eventType,
                         'payload' => $payload
@@ -113,21 +104,6 @@ class XenditWebhookController extends Controller
                 'trace' => $e->getTraceAsString(),
                 'payload' => $payload
             ]);
-            
-            // Ultimate fallback: Try to process as invoice.paid if it looks like a payment
-            if (($payload['status'] ?? '') === 'PAID') {
-                Log::info('Attempting to process failed webhook as invoice.paid (error recovery)', [
-                    'original_error' => $e->getMessage()
-                ]);
-                try {
-                    return $this->handleInvoicePaid($payload);
-                } catch (\Exception $fallbackError) {
-                    Log::error('Fallback processing also failed', [
-                        'fallback_error' => $fallbackError->getMessage()
-                    ]);
-                }
-            }
-            
             return response()->json(['error' => 'Internal server error'], 500);
         }
     }
@@ -248,6 +224,18 @@ class XenditWebhookController extends Controller
             return response()->json(['error' => 'No invoice ID found'], 400);
         }
 
+        // Verify payment status with Xendit API
+        $verifiedStatus = $this->verifyPaymentStatusWithXendit($invoiceId);
+        
+        if ($verifiedStatus !== 'PAID' && $verifiedStatus !== 'SUCCEEDED' && $verifiedStatus !== 'COMPLETED') {
+            Log::warning('Payment status verification failed', [
+                'invoice_id' => $invoiceId,
+                'webhook_status' => $payload['status'] ?? 'unknown',
+                'verified_status' => $verifiedStatus
+            ]);
+            return response()->json(['error' => 'Payment verification failed'], 400);
+        }
+
         // Find or create subscription
         $subscription = Subscription::where('xendit_invoice_id', $invoiceId)->first();
         
@@ -260,13 +248,7 @@ class XenditWebhookController extends Controller
                 'invoice_id' => $invoiceId,
                 'payload' => $payload
             ]);
-            
-            // Instead of returning error, create a minimal subscription to prevent webhook failure
-            $subscription = $this->createMinimalSubscription($payload);
-            
-            if (!$subscription) {
-                return response()->json(['error' => 'Failed to create subscription'], 500);
-            }
+            return response()->json(['error' => 'Subscription not found'], 404);
         }
 
         // Check if payment is already processed
@@ -596,7 +578,7 @@ class XenditWebhookController extends Controller
                 'full_name' => $fullName
             ]);
 
-            // Find or create user - ALWAYS ensure we have a user
+            // Find or create user
             $user = null;
             if ($userEmail) {
                 $user = User::where('email', $userEmail)->first();
@@ -633,27 +615,23 @@ class XenditWebhookController extends Controller
             } else {
                 // Try to find user by external_id pattern or user_id
                 $user = $this->findUserFromWebhookData($payload);
-                
-                // If still no user, create a placeholder user
-                if (!$user) {
-                    $user = User::create([
-                        'first_name' => $firstName,
-                        'last_name' => $lastName,
-                        'email' => 'webhook-user-' . uniqid() . '@placeholder.com',
-                        'password' => bcrypt(str_random(12)),
-                    ]);
-                    
-                    Log::info('Placeholder user created from webhook', [
-                        'user_id' => $user->id,
-                        'name' => $fullName
-                    ]);
-                }
             }
 
-            // Ensure we have a user at this point
+            // If still no user found, create a placeholder user with generated email
             if (!$user) {
-                Log::error('Failed to create or find user for subscription', ['payload' => $payload]);
-                return null;
+                $generatedEmail = 'user_' . time() . '_' . rand(1000, 9999) . '@webhook.local';
+                $user = User::create([
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'email' => $generatedEmail,
+                    'password' => bcrypt(str_random(12)),
+                ]);
+                
+                Log::info('Created placeholder user for webhook', [
+                    'user_id' => $user->id,
+                    'email' => $generatedEmail,
+                    'name' => $fullName
+                ]);
             }
 
             // Determine plan from amount or items array
@@ -688,19 +666,8 @@ class XenditWebhookController extends Controller
             // Extract currency
             $currency = $payload['currency'] ?? 'PHP';
 
-            // Ensure we have valid data before creating subscription
-            if (!$invoiceId) {
-                Log::error('No invoice ID found in payload', ['payload' => $payload]);
-                return null;
-            }
-
-            if (!$amount || $amount <= 0) {
-                Log::error('Invalid amount in payload', ['amount' => $amount, 'payload' => $payload]);
-                return null;
-            }
-
             $subscription = Subscription::create([
-                'user_id' => $user->id, // Always ensure we have a user_id
+                'user_id' => $user->id, // Always ensure we have a valid user_id
                 'plan_id' => $planId,
                 'status' => 'active',
                 'xendit_invoice_id' => $invoiceId,
@@ -921,67 +888,6 @@ class XenditWebhookController extends Controller
         } catch (\Exception $e) {
             Log::error('Error finding user from webhook data', [
                 'error' => $e->getMessage(),
-                'payload' => $payload
-            ]);
-            return null;
-        }
-    }
-
-    /**
-     * Create minimal subscription as fallback
-     */
-    private function createMinimalSubscription($payload)
-    {
-        try {
-            // Always create a user for minimal subscription
-            $user = User::create([
-                'first_name' => 'Webhook',
-                'last_name' => 'User',
-                'email' => 'webhook-user-' . uniqid() . '@placeholder.com',
-                'password' => bcrypt(str_random(12)),
-            ]);
-
-            Log::info('Minimal user created for subscription', [
-                'user_id' => $user->id,
-                'invoice_id' => $payload['id'] ?? 'unknown'
-            ]);
-
-            // Determine plan from amount
-            $amount = $payload['amount'] ?? $payload['paid_amount'] ?? 0;
-            $planId = $this->inferPlanFromAmount($amount);
-
-            // Extract basic information
-            $invoiceId = $payload['id'] ?? null;
-            $paymentId = $payload['payment_id'] ?? null;
-            $currency = $payload['currency'] ?? 'PHP';
-
-            $subscription = Subscription::create([
-                'user_id' => $user->id, // Always ensure we have a user_id
-                'plan_id' => $planId,
-                'status' => 'active',
-                'xendit_invoice_id' => $invoiceId,
-                'xendit_payment_id' => $paymentId,
-                'amount' => $amount,
-                'currency' => $currency,
-                'start_date' => now(),
-                'end_date' => now()->addMonth(),
-                'payment_status' => 'paid',
-            ]);
-
-            Log::info('Minimal subscription created', [
-                'subscription_id' => $subscription->id,
-                'user_id' => $subscription->user_id,
-                'plan_id' => $subscription->plan_id,
-                'invoice_id' => $invoiceId,
-                'amount' => $amount
-            ]);
-
-            return $subscription;
-
-        } catch (\Exception $e) {
-            Log::error('Failed to create minimal subscription', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
                 'payload' => $payload
             ]);
             return null;

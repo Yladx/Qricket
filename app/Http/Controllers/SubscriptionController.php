@@ -127,7 +127,7 @@ class SubscriptionController extends Controller
         }
 
         // Verify webhook signature if available
-        if ($signature && !$this->verifyWebhookSignature($request, $signature)) {
+        if ($signature && !$this->verifyWebhookSignature(request(), $signature)) {
             Log::warning('Invalid webhook signature received', [
                 'received_signature' => $signature,
                 'payload' => $payload
@@ -537,7 +537,7 @@ class SubscriptionController extends Controller
         try {
             // Extract user information from different possible locations
             $customerData = $payload['customer'] ?? $payload['data']['customer'] ?? [];
-            $userEmail = $customerData['email'] ?? $payload['email'] ?? null;
+            $userEmail = $customerData['email'] ?? $payload['email'] ?? $payload['payer_email'] ?? null;
             
             // Extract customer name from various possible locations
             $firstName = $customerData['given_names'] ?? $customerData['first_name'] ?? $customerData['firstname'] ?? '';
@@ -604,6 +604,23 @@ class SubscriptionController extends Controller
                 }
             }
 
+            // If still no user found, create a placeholder user
+            if (!$user) {
+                $generatedEmail = 'user_' . time() . '_' . rand(1000, 9999) . '@webhook.local';
+                $user = User::create([
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'email' => $generatedEmail,
+                    'password' => bcrypt(str_random(12)),
+                ]);
+                
+                Log::info('Created placeholder user for webhook', [
+                    'user_id' => $user->id,
+                    'email' => $generatedEmail,
+                    'name' => $fullName
+                ]);
+            }
+
             // Validate and update user data if user exists
             if ($user) {
                 $user = $this->validateAndUpdateUserData($user, $customerData);
@@ -612,6 +629,25 @@ class SubscriptionController extends Controller
             // Determine plan from amount
             $amount = $payload['amount'] ?? $payload['data']['amount'] ?? $payload['payment']['amount'] ?? null;
             $planId = $this->inferPlanFromAmount($amount);
+            
+            // If we have items array, try to get plan from there
+            if (isset($payload['items']) && is_array($payload['items']) && !empty($payload['items'])) {
+                $item = $payload['items'][0]; // Get first item
+                $itemName = strtolower($item['name'] ?? '');
+                
+                if (strpos($itemName, 'basic') !== false) {
+                    $planId = 'basic';
+                } elseif (strpos($itemName, 'pro') !== false) {
+                    $planId = 'pro';
+                } elseif (strpos($itemName, 'enterprise') !== false) {
+                    $planId = 'enterprise';
+                }
+                
+                Log::info('Plan determined from items array', [
+                    'item_name' => $item['name'] ?? 'unknown',
+                    'inferred_plan' => $planId
+                ]);
+            }
             
             // Extract invoice ID from various locations
             $invoiceId = $payload['id'] ?? $payload['data']['id'] ?? $payload['invoice_id'] ?? null;
@@ -623,7 +659,7 @@ class SubscriptionController extends Controller
             $currency = $payload['currency'] ?? $payload['data']['currency'] ?? $payload['payment']['currency'] ?? 'PHP';
 
             $subscription = Subscription::create([
-                'user_id' => $user ? $user->id : null,
+                'user_id' => $user->id, // Always ensure we have a valid user_id
                 'plan_id' => $planId,
                 'status' => 'active',
                 'xendit_invoice_id' => $invoiceId,
