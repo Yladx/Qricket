@@ -44,6 +44,7 @@ return [
         'api_key' => env('XENDIT_SECRET_KEY'),
         'public_key' => env('XENDIT_PUBLIC_KEY'),
         'callback_token' => env('XENDIT_WEBHOOK_TOKEN'),
+        'webhook_secret' => env('XENDIT_WEBHOOK_SECRET'),
     ],
 
 ];
