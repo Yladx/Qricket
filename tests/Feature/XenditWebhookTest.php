@@ -52,7 +52,7 @@ class XenditWebhookTest extends TestCase
             "payment_destination" => "888888888888"
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => config('services.xendit.callback_token')
         ]);
 
@@ -95,7 +95,7 @@ class XenditWebhookTest extends TestCase
             "currency" => "IDR"
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => config('services.xendit.callback_token')
         ]);
 
@@ -130,7 +130,7 @@ class XenditWebhookTest extends TestCase
             "currency" => "IDR"
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => config('services.xendit.callback_token')
         ]);
 
@@ -153,7 +153,7 @@ class XenditWebhookTest extends TestCase
             "amount" => 50000
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => 'invalid_token'
         ]);
 
@@ -178,7 +178,7 @@ class XenditWebhookTest extends TestCase
             "currency" => "IDR"
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => config('services.xendit.callback_token')
         ]);
 
@@ -194,7 +194,7 @@ class XenditWebhookTest extends TestCase
             "amount" => 50000
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => config('services.xendit.callback_token')
         ]);
 
@@ -210,7 +210,7 @@ class XenditWebhookTest extends TestCase
             "currency" => "IDR"
         ];
 
-        $response = $this->postJson('/webhook/xendit', $payload, [
+        $response = $this->postJson('/xendit/webhook', $payload, [
             'x-callback-token' => config('services.xendit.callback_token')
         ]);
 

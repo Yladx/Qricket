@@ -83,6 +83,14 @@ class XenditWebhookController extends Controller
                 case 'refund.failed':
                     return $this->handleRefundFailed($payload);
                 default:
+                    // Fallback: If status is PAID but event type is unknown, treat as invoice.paid
+                    if (($payload['status'] ?? '') === 'PAID' && $eventType === 'unknown') {
+                        Log::info('Treating unknown event with PAID status as invoice.paid', [
+                            'payload' => $payload
+                        ]);
+                        return $this->handleInvoicePaid($payload);
+                    }
+                    
                     Log::info('Unhandled webhook event type', [
                         'event_type' => $eventType,
                         'payload' => $payload
@@ -114,20 +122,52 @@ class XenditWebhookController extends Controller
         $status = $payload['status'] ?? null;
         $type = $payload['type'] ?? null;
 
+        Log::info('Determining event type from payload', [
+            'status' => $status,
+            'type' => $type,
+            'has_payment_method' => isset($payload['payment_method']),
+            'has_payer_email' => isset($payload['payer_email']),
+            'has_paid_at' => isset($payload['paid_at'])
+        ]);
+
+        // If we have a status but no type, infer based on status and other fields
+        if ($status && !$type) {
+            switch (strtoupper($status)) {
+                case 'PAID':
+                    // Check if this looks like a payment webhook
+                    if (isset($payload['payment_method']) || isset($payload['payer_email']) || isset($payload['paid_at'])) {
+                        return 'invoice.paid';
+                    }
+                    break;
+                case 'EXPIRED':
+                    return 'invoice.expired';
+                case 'CANCELLED':
+                case 'CANCELED':
+                    return 'invoice.cancelled';
+                case 'FAILED':
+                    return 'payment.failed';
+                case 'COMPLETED':
+                    return 'payment.completed';
+            }
+        }
+
+        // Original logic for when type is present
         if ($type === 'INVOICE') {
-            switch ($status) {
+            switch (strtoupper($status)) {
                 case 'PAID':
                     return 'invoice.paid';
                 case 'EXPIRED':
                     return 'invoice.expired';
                 case 'CANCELLED':
+                case 'CANCELED':
                     return 'invoice.cancelled';
             }
         }
 
         if ($type === 'PAYMENT') {
-            switch ($status) {
+            switch (strtoupper($status)) {
                 case 'COMPLETED':
+                case 'SUCCEEDED':
                     return 'payment.completed';
                 case 'FAILED':
                     return 'payment.failed';
@@ -135,7 +175,7 @@ class XenditWebhookController extends Controller
         }
 
         if ($type === 'DISBURSEMENT') {
-            switch ($status) {
+            switch (strtoupper($status)) {
                 case 'COMPLETED':
                     return 'disbursement.completed';
                 case 'FAILED':
@@ -144,13 +184,19 @@ class XenditWebhookController extends Controller
         }
 
         if ($type === 'REFUND') {
-            switch ($status) {
+            switch (strtoupper($status)) {
                 case 'COMPLETED':
                     return 'refund.completed';
                 case 'FAILED':
                     return 'refund.failed';
             }
         }
+
+        Log::warning('Could not determine event type from payload', [
+            'status' => $status,
+            'type' => $type,
+            'payload_keys' => array_keys($payload)
+        ]);
 
         return 'unknown';
     }
