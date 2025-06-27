@@ -76,6 +76,7 @@ if (app()->environment('local')) {
 }
 
 // Add the new Xendit webhook route (no auth required)
-Route::post('/xendit/webhook', [XenditWebhookController::class, 'handle'])->name('xendit.webhook');
+Route::post('/webhook/xendit', [XenditWebhookController::class, 'handle'])->name('xendit.webhook');
+Route::post('/xendit/webhook', [XenditWebhookController::class, 'handle'])->name('xendit.webhook.alternative');
 
 require __DIR__.'/auth.php';
