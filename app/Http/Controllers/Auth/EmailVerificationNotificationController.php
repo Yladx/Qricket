@@ -19,6 +19,13 @@ class EmailVerificationNotificationController extends Controller
 
         $request->user()->sendEmailVerificationNotification();
 
+        // Log email verification notification sent
+        $request->user()->logActivity('email_verification_sent', 'Email verification notification sent', [
+            'notification_method' => 'email',
+            'user_agent' => $request->userAgent(),
+            'ip_address' => $request->ip()
+        ]);
+
         return back()->with('status', 'verification-link-sent');
     }
 }

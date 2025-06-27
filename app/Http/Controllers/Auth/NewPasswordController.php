@@ -48,6 +48,13 @@ class NewPasswordController extends Controller
                 ])->save();
 
                 event(new PasswordReset($user));
+
+                // Log password reset
+                $user->logActivity('password_reset', 'Password reset via email link', [
+                    'reset_method' => 'email_token',
+                    'user_agent' => $request->userAgent(),
+                    'ip_address' => $request->ip()
+                ]);
             }
         );
 

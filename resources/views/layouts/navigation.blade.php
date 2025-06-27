@@ -37,7 +37,7 @@
                 <!-- Profile Picture -->
                 <div class="ms-3 relative">
                     @php
-                        $name = Auth::user()->name;
+                        $name = Auth::user()->full_name;
                         $initials = strtoupper(substr($name, 0, 1) . (str_contains($name, ' ') ? substr($name, strpos($name, ' ') + 1, 1) : ''));
                         $colors = ['bg-blue-600', 'bg-green-600', 'bg-purple-600', 'bg-pink-600', 'bg-indigo-600', 'bg-red-600', 'bg-yellow-600'];
                         $colorIndex = crc32($name) % count($colors);
@@ -51,7 +51,7 @@
                 <x-dropdown align="right" width="48">
                     <x-slot name="trigger">
                         <button class="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-gray-500 bg-white hover:text-gray-700 focus:outline-none transition ease-in-out duration-150">
-                            <div>{{ Auth::user()->name }}</div>
+                            <div>{{ Auth::user()->full_name }}</div>
 
                             <div class="ms-1">
                                 <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
@@ -66,13 +66,17 @@
                             {{ __('Profile') }}
                         </x-dropdown-link>
 
+                        <!-- Test SweetAlert Button (temporary) -->
+                        <x-dropdown-link href="#" onclick="event.preventDefault(); testSweetAlert();">
+                            Test SweetAlert
+                        </x-dropdown-link>
+
                         <!-- Authentication -->
-                        <form method="POST" action="{{ route('logout') }}">
+                        <form method="POST" action="{{ route('logout') }}" id="logout-form-desktop">
                             @csrf
 
                             <x-dropdown-link :href="route('logout')"
-                                    onclick="event.preventDefault();
-                                                this.closest('form').submit();">
+                                    onclick="event.preventDefault(); confirmLogout('logout-form-desktop');">
                                 {{ __('Log Out') }}
                             </x-dropdown-link>
                         </form>
@@ -103,7 +107,7 @@
         <!-- Responsive Settings Options -->
         <div class="pt-4 pb-1 border-t border-gray-200">
             <div class="px-4">
-                <div class="font-medium text-base text-gray-800">{{ Auth::user()->name }}</div>
+                <div class="font-medium text-base text-gray-800">{{ Auth::user()->full_name }}</div>
                 <div class="font-medium text-sm text-gray-500">{{ Auth::user()->email }}</div>
             </div>
 
@@ -113,12 +117,11 @@
                 </x-responsive-nav-link>
 
                 <!-- Authentication -->
-                <form method="POST" action="{{ route('logout') }}">
+                <form method="POST" action="{{ route('logout') }}" id="logout-form-mobile">
                     @csrf
 
                     <x-responsive-nav-link :href="route('logout')"
-                            onclick="event.preventDefault();
-                                        this.closest('form').submit();">
+                            onclick="event.preventDefault(); confirmLogout('logout-form-mobile');">
                         {{ __('Log Out') }}
                     </x-responsive-nav-link>
                 </form>

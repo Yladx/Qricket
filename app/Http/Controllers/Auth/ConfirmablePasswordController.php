@@ -35,6 +35,13 @@ class ConfirmablePasswordController extends Controller
 
         $request->session()->put('auth.password_confirmed_at', time());
 
+        // Log password confirmation
+        $request->user()->logActivity('password_confirmed', 'Password confirmed for sensitive action', [
+            'confirmation_method' => 'password_verification',
+            'user_agent' => $request->userAgent(),
+            'ip_address' => $request->ip()
+        ]);
+
         return redirect()->intended(route('dashboard', absolute: false));
     }
 }

@@ -58,45 +58,52 @@ class SubscriptionController extends Controller
             'plan_id' => 'required|in:basic,pro,enterprise',
         ]);
 
-        $plan = $this->getPlanDetails($request->plan_id);
-        
-        // Create Xendit invoice
-        $invoice = $this->createXenditInvoice($plan, $request->user());
-
-        // Create subscription record
-        $subscription = Subscription::create([
-            'user_id' => $request->user()->id,
-            'plan_id' => $plan['id'],
-            'status' => 'pending',
-            'xendit_invoice_id' => $invoice['id'],
-            'amount' => $plan['price'],
-            'currency' => 'PHP',
-            'start_date' => now(),
-            'end_date' => now()->addMonth(),
-            'payment_status' => 'pending',
-        ]);
-
-        // Send invoice email to user
         try {
-            Mail::to($request->user()->email)
-                ->send(new InvoiceMail($subscription, $invoice['invoice_url'], $plan));
+            $plan = $this->getPlanDetails($request->plan_id);
             
-            Log::info('Invoice email sent successfully', [
+            Log::info('Creating invoice for subscription', [
                 'user_id' => $request->user()->id,
                 'user_email' => $request->user()->email,
-                'subscription_id' => $subscription->id,
-                'invoice_id' => $invoice['id']
+                'user_name' => $request->user()->full_name,
+                'plan_id' => $plan['id'],
+                'plan_price' => $plan['price']
             ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to send invoice email', [
-                'user_id' => $request->user()->id,
-                'user_email' => $request->user()->email,
-                'subscription_id' => $subscription->id,
-                'error' => $e->getMessage()
-            ]);
-        }
+            
+            // Create Xendit invoice
+            $invoice = $this->createXenditInvoice($plan, $request->user());
 
-        return redirect($invoice['invoice_url']);
+            // Send invoice email to user (no subscription record yet)
+            try {
+                Mail::to($request->user()->email)
+                    ->send(new InvoiceMail(null, $invoice['invoice_url'], $plan));
+                
+                Log::info('Invoice email sent successfully', [
+                    'user_id' => $request->user()->id,
+                    'user_email' => $request->user()->email,
+                    'invoice_id' => $invoice['id']
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Failed to send invoice email', [
+                    'user_id' => $request->user()->id,
+                    'user_email' => $request->user()->email,
+                    'invoice_id' => $invoice['id'],
+                    'error' => $e->getMessage()
+                ]);
+            }
+
+            return redirect($invoice['invoice_url']);
+            
+        } catch (\Exception $e) {
+            Log::error('Failed to create invoice for subscription', [
+                'user_id' => $request->user()->id,
+                'user_email' => $request->user()->email,
+                'plan_id' => $request->plan_id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return back()->withErrors(['error' => 'Failed to create payment invoice: ' . $e->getMessage()]);
+        }
     }
 
     public function webhook(Request $request)
@@ -123,11 +130,35 @@ class SubscriptionController extends Controller
             $subscription = Subscription::where('xendit_invoice_id', $payload['id'])->first();
             
             if (!$subscription) {
-                Log::error('Subscription not found for webhook', [
+                // Create the subscription record now
+                $user = \App\Models\User::where('email', $payload['customer']['email'] ?? null)->first();
+                $planId = null;
+                $amount = $payload['amount'] ?? null;
+                // Try to infer plan from amount
+                if ($amount == 199) $planId = 'basic';
+                elseif ($amount == 399) $planId = 'pro';
+                elseif ($amount == 999) $planId = 'enterprise';
+                else $planId = 'unknown';
+
+                $subscription = Subscription::create([
+                    'user_id' => $user ? $user->id : null,
+                    'plan_id' => $planId,
+                    'status' => 'active',
                     'xendit_invoice_id' => $payload['id'],
-                    'payload' => $payload
+                    'xendit_payment_id' => $payload['payment_id'] ?? null,
+                    'amount' => $amount,
+                    'currency' => $payload['currency'] ?? 'PHP',
+                    'start_date' => now(),
+                    'end_date' => now()->addMonth(),
+                    'payment_status' => 'paid',
                 ]);
-                return response()->json(['error' => 'Subscription not found'], 404);
+
+                Log::info('Subscription created from webhook', [
+                    'subscription_id' => $subscription->id,
+                    'user_id' => $subscription->user_id,
+                    'plan_id' => $subscription->plan_id,
+                    'invoice_id' => $payload['id']
+                ]);
             }
 
             // Check if payment is already processed
@@ -279,7 +310,7 @@ class SubscriptionController extends Controller
                     'description' => "Subscription to {$plan['name']}",
                     'invoice_duration' => 86400, // 24 hours
                     'customer' => [
-                        'given_names' => $user->name,
+                        'given_names' => $user->full_name,
                         'email' => $user->email,
                     ],
                     'success_redirect_url' => route('subscription.success'),
@@ -343,7 +374,7 @@ class SubscriptionController extends Controller
                 'invoice_data' => $invoiceData,
                 'user_info' => [
                     'id' => $user->id,
-                    'name' => $user->name,
+                    'name' => $user->full_name,
                     'email' => $user->email,
                 ],
                 'plan_info' => $plan,

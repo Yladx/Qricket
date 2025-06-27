@@ -26,6 +26,8 @@ class ProfileController extends Controller
      */
     public function update(ProfileUpdateRequest $request): RedirectResponse
     {
+        $originalData = $request->user()->only(['first_name', 'last_name', 'email', 'organizer']);
+        
         $request->user()->fill($request->validated());
 
         if ($request->user()->isDirty('email')) {
@@ -33,6 +35,35 @@ class ProfileController extends Controller
         }
 
         $request->user()->save();
+
+        // Log profile update
+        $changes = [];
+        foreach (['first_name', 'last_name', 'email', 'organizer'] as $field) {
+            if ($originalData[$field] !== $request->user()->$field) {
+                $changes[$field] = [
+                    'from' => $originalData[$field],
+                    'to' => $request->user()->$field
+                ];
+            }
+        }
+
+        $request->user()->logActivity('profile_update', 'Profile information updated', [
+            'updated_fields' => array_keys($changes),
+            'changes' => $changes,
+            'user_agent' => $request->userAgent(),
+            'ip_address' => $request->ip()
+        ]);
+
+        // Log organizer status change specifically if it changed
+        if (isset($changes['organizer'])) {
+            $status = $changes['organizer']['to'] ? 'enabled' : 'disabled';
+            $request->user()->logActivity('organizer_status_changed', "Organizer status {$status}", [
+                'previous_status' => $changes['organizer']['from'],
+                'new_status' => $changes['organizer']['to'],
+                'user_agent' => $request->userAgent(),
+                'ip_address' => $request->ip()
+            ]);
+        }
 
         return Redirect::route('profile.edit')->with('status', 'profile-updated');
     }
@@ -47,6 +78,13 @@ class ProfileController extends Controller
         ]);
 
         $user = $request->user();
+
+        // Log account deletion before deleting
+        $user->logActivity('account_deleted', 'User account deleted', [
+            'deletion_method' => 'user_request',
+            'user_agent' => $request->userAgent(),
+            'ip_address' => $request->ip()
+        ]);
 
         Auth::logout();
 

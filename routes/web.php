@@ -2,8 +2,8 @@
 
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SubscriptionController;
-use App\Http\Controllers\WebhookController;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Log;
 
 Route::get('/', function () {
     return view('welcome');
@@ -29,6 +29,81 @@ Route::middleware('auth')->group(function () {
     Route::get('/subscription/{subscription}/check-payment', [SubscriptionController::class, 'checkPaymentStatus'])
         ->name('subscription.check-payment');
 });
+
+// Test webhook route for payload verification (no authentication required)
+Route::post('/test-webhook', function (\Illuminate\Http\Request $request) {
+    $payload = $request->all();
+    $headers = $request->headers->all();
+    
+    // Log everything for debugging
+    Log::info('Test webhook received', [
+        'payload' => $payload,
+        'headers' => $headers,
+        'method' => $request->method(),
+        'url' => $request->fullUrl(),
+        'ip' => $request->ip(),
+        'user_agent' => $request->userAgent(),
+        'content_type' => $request->header('Content-Type'),
+        'timestamp' => now()->toISOString(),
+    ]);
+    
+    // Save to file for easy inspection
+    try {
+        $testWebhooksDir = storage_path('app/test-webhooks');
+        if (!file_exists($testWebhooksDir)) {
+            mkdir($testWebhooksDir, 0755, true);
+        }
+        
+        $timestamp = now()->format('Y-m-d_H-i-s');
+        $filename = "test_webhook_{$timestamp}.json";
+        $filepath = $testWebhooksDir . '/' . $filename;
+        
+        $dataToSave = [
+            'received_at' => now()->toISOString(),
+            'payload' => $payload,
+            'headers' => $headers,
+            'request_info' => [
+                'method' => $request->method(),
+                'url' => $request->fullUrl(),
+                'ip' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'content_type' => $request->header('Content-Type'),
+            ],
+            'file_info' => [
+                'filename' => $filename,
+                'saved_at' => now()->toISOString(),
+            ]
+        ];
+        
+        file_put_contents($filepath, json_encode($dataToSave, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        
+        Log::info('Test webhook data saved to file', ['filepath' => $filepath]);
+        
+    } catch (\Exception $e) {
+        Log::error('Failed to save test webhook data', ['error' => $e->getMessage()]);
+    }
+    
+    // Return success response
+    return response()->json([
+        'status' => 'success',
+        'message' => 'Test webhook received and logged',
+        'received_at' => now()->toISOString(),
+        'payload_keys' => array_keys($payload),
+        'headers_keys' => array_keys($headers),
+    ]);
+})->name('test.webhook');
+
+// GET route to test if the webhook endpoint is accessible
+Route::get('/test-webhook', function () {
+    return response()->json([
+        'status' => 'success',
+        'message' => 'Test webhook endpoint is accessible',
+        'endpoint' => '/test-webhook',
+        'methods' => ['GET', 'POST'],
+        'description' => 'Use POST to send test payloads, GET to verify endpoint accessibility',
+        'timestamp' => now()->toISOString(),
+    ]);
+})->name('test.webhook.get');
 
 // Email preview routes (only in development)
 if (app()->environment('local')) {
@@ -73,8 +148,5 @@ if (app()->environment('local')) {
         ]);
     })->name('email.preview.payment-confirmation');
 }
-
-// Webhook route for payment gateway (e.g., Xendit)
-Route::post('/webhooks/payment', [WebhookController::class, 'handlePaymentWebhook']);
 
 require __DIR__.'/auth.php';

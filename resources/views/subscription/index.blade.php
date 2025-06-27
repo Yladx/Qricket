@@ -26,10 +26,10 @@
                                 @endforeach
                             </ul>
 
-                            <form action="{{ route('subscription.create') }}" method="POST" class="mt-8">
+                            <form action="{{ route('subscription.create') }}" method="POST" class="mt-8" id="subscription-form-{{ $plan['id'] }}">
                                 @csrf
                                 <input type="hidden" name="plan_id" value="{{ $plan['id'] }}">
-                                <button type="submit" class="w-full inline-flex justify-center items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-indigo-700 focus:bg-indigo-700 active:bg-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition ease-in-out duration-150">
+                                <button type="button" onclick="confirmSubscription('{{ $plan['id'] }}', '{{ $plan['name'] }}', {{ $plan['price'] }})" class="w-full inline-flex justify-center items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-indigo-700 focus:bg-indigo-700 active:bg-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition ease-in-out duration-150">
                                     Subscribe Now
                                 </button>
                             </form>
