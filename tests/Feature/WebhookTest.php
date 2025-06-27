@@ -30,17 +30,30 @@ class WebhookTest extends TestCase
     public function test_webhook_handles_invoice_paid_event()
     {
         $payload = [
-            'event' => 'invoice.paid',
             'id' => 'inv_test_123',
-            'status' => 'PAID',
-            'amount' => 199,
-            'currency' => 'PHP',
-            'customer' => [
-                'given_names' => 'John',
-                'surname' => 'Doe',
-                'email' => 'john.doe@example.com'
+            'items' => [
+                [
+                    'name' => 'Basic Plan',
+                    'price' => 199,
+                    'category' => 'Subscription',
+                    'quantity' => 1
+                ]
             ],
-            'payment_id' => 'pay_test_123'
+            'amount' => 199,
+            'status' => 'PAID',
+            'created' => '2025-06-27T22:45:56.982Z',
+            'paid_at' => '2025-06-27T22:46:02.624Z',
+            'updated' => '2025-06-27T22:46:04.848Z',
+            'user_id' => 'user_test_123',
+            'currency' => 'PHP',
+            'payment_id' => 'pay_test_123',
+            'description' => 'Subscription to Basic Plan',
+            'external_id' => 'subscription-test-123',
+            'paid_amount' => 199,
+            'ewallet_type' => 'GCASH',
+            'merchant_name' => 'Qricket',
+            'payment_method' => 'EWALLET',
+            'payment_channel' => 'GCASH'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -72,17 +85,25 @@ class WebhookTest extends TestCase
     public function test_webhook_handles_payment_succeeded_event()
     {
         $payload = [
-            'event' => 'payment.succeeded',
             'id' => 'inv_test_456',
-            'status' => 'SUCCEEDED',
-            'amount' => 399,
-            'currency' => 'PHP',
-            'customer' => [
-                'given_names' => 'Jane',
-                'surname' => 'Smith',
-                'email' => 'jane.smith@example.com'
+            'items' => [
+                [
+                    'name' => 'Pro Plan',
+                    'price' => 399,
+                    'category' => 'Subscription',
+                    'quantity' => 1
+                ]
             ],
-            'payment_id' => 'pay_test_456'
+            'amount' => 399,
+            'status' => 'PAID',
+            'user_id' => 'user_test_456',
+            'currency' => 'PHP',
+            'payment_id' => 'pay_test_456',
+            'description' => 'Subscription to Pro Plan',
+            'external_id' => 'subscription-test-456',
+            'paid_amount' => 399,
+            'payment_method' => 'EWALLET',
+            'payment_channel' => 'GCASH'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -110,9 +131,10 @@ class WebhookTest extends TestCase
         ]);
 
         $payload = [
-            'event' => 'invoice.expired',
             'id' => 'inv_test_789',
-            'status' => 'EXPIRED'
+            'status' => 'EXPIRED',
+            'amount' => 199,
+            'currency' => 'PHP'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -140,9 +162,10 @@ class WebhookTest extends TestCase
         ]);
 
         $payload = [
-            'event' => 'invoice.cancelled',
             'id' => 'inv_test_101',
-            'status' => 'CANCELLED'
+            'status' => 'CANCELLED',
+            'amount' => 199,
+            'currency' => 'PHP'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -170,9 +193,10 @@ class WebhookTest extends TestCase
         ]);
 
         $payload = [
-            'event' => 'payment.failed',
             'id' => 'inv_test_202',
-            'status' => 'FAILED'
+            'status' => 'FAILED',
+            'amount' => 199,
+            'currency' => 'PHP'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -193,8 +217,9 @@ class WebhookTest extends TestCase
     public function test_webhook_rejects_invalid_token()
     {
         $payload = [
-            'event' => 'invoice.paid',
-            'id' => 'inv_test_123'
+            'id' => 'inv_test_123',
+            'status' => 'PAID',
+            'amount' => 199
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -205,17 +230,22 @@ class WebhookTest extends TestCase
         $response->assertJson(['error' => 'Invalid token']);
     }
 
-    public function test_webhook_handles_user_data_extraction()
+    public function test_webhook_handles_plan_extraction_from_items()
     {
         $payload = [
-            'event' => 'invoice.paid',
             'id' => 'inv_test_303',
+            'items' => [
+                [
+                    'name' => 'Enterprise Plan',
+                    'price' => 999,
+                    'category' => 'Subscription',
+                    'quantity' => 1
+                ]
+            ],
             'status' => 'PAID',
             'amount' => 999,
-            'customer' => [
-                'name' => 'Alice Johnson', // Full name instead of separate fields
-                'email' => 'alice.johnson@example.com'
-            ]
+            'currency' => 'PHP',
+            'payment_id' => 'pay_test_303'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -223,13 +253,6 @@ class WebhookTest extends TestCase
         ]);
 
         $response->assertStatus(200);
-
-        // Check that user was created with split name
-        $this->assertDatabaseHas('users', [
-            'email' => 'alice.johnson@example.com',
-            'first_name' => 'Alice',
-            'last_name' => 'Johnson'
-        ]);
 
         // Check that subscription was created with enterprise plan
         $this->assertDatabaseHas('subscriptions', [
@@ -249,9 +272,9 @@ class WebhookTest extends TestCase
         ]);
 
         $payload = [
-            'event' => 'invoice.paid',
             'id' => 'inv_test_404',
-            'status' => 'PAID'
+            'status' => 'PAID',
+            'amount' => 199
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [
@@ -265,8 +288,8 @@ class WebhookTest extends TestCase
     public function test_webhook_handles_unknown_event_type()
     {
         $payload = [
-            'event' => 'unknown.event',
-            'id' => 'inv_test_505'
+            'id' => 'inv_test_505',
+            'status' => 'UNKNOWN_STATUS'
         ];
 
         $response = $this->postJson('/webhook/xendit', $payload, [

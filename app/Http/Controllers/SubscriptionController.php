@@ -216,8 +216,32 @@ class SubscriptionController extends Controller
             return $payload['data']['event'];
         }
 
-        // Fallback: Infer from status and other fields (older format)
+        // Handle actual Xendit payload format (based on real webhook data)
         $status = $payload['status'] ?? $payload['data']['status'] ?? null;
+        
+        // For Xendit invoices, status directly indicates the event
+        if ($status) {
+            switch (strtoupper($status)) {
+                case 'PAID':
+                case 'SUCCEEDED':
+                case 'COMPLETED':
+                    return 'invoice.paid';
+                case 'EXPIRED':
+                    return 'invoice.expired';
+                case 'CANCELLED':
+                case 'CANCELED':
+                    return 'invoice.cancelled';
+                case 'VOIDED':
+                    return 'invoice.voided';
+                case 'PENDING':
+                    return 'payment.pending';
+                case 'FAILED':
+                case 'DECLINED':
+                    return 'payment.failed';
+            }
+        }
+
+        // Fallback: Check for type field (older format)
         $type = $payload['type'] ?? $payload['data']['type'] ?? null;
 
         if ($type === 'INVOICE') {
@@ -332,7 +356,10 @@ class SubscriptionController extends Controller
                 'subscription_id' => $subscription->id,
                 'user_id' => $subscription->user_id,
                 'payment_status' => 'paid',
-                'xendit_payment_id' => $payload['payment_id'] ?? $payload['data']['payment_id'] ?? $payload['payment']['id'] ?? null
+                'xendit_payment_id' => $payload['payment_id'] ?? $payload['data']['payment_id'] ?? $payload['payment']['id'] ?? null,
+                'xendit_user_id' => $payload['user_id'] ?? null,
+                'payment_method' => $payload['payment_method'] ?? null,
+                'payment_channel' => $payload['payment_channel'] ?? null
             ]);
 
             // Send payment confirmation email
@@ -539,6 +566,10 @@ class SubscriptionController extends Controller
             $customerData = $payload['customer'] ?? $payload['data']['customer'] ?? [];
             $userEmail = $customerData['email'] ?? $payload['email'] ?? null;
             
+            // For Xendit payloads, we might need to extract user info differently
+            // Check if we have user_id in the payload
+            $xenditUserId = $payload['user_id'] ?? null;
+            
             // Extract customer name from various possible locations
             $firstName = $customerData['given_names'] ?? $customerData['first_name'] ?? $customerData['firstname'] ?? '';
             $lastName = $customerData['surname'] ?? $customerData['last_name'] ?? $customerData['lastname'] ?? '';
@@ -563,6 +594,7 @@ class SubscriptionController extends Controller
 
             Log::info('Extracted user data from webhook', [
                 'email' => $userEmail,
+                'xendit_user_id' => $xenditUserId,
                 'first_name' => $firstName,
                 'last_name' => $lastName,
                 'full_name' => $fullName
@@ -609,9 +641,31 @@ class SubscriptionController extends Controller
                 $user = $this->validateAndUpdateUserData($user, $customerData);
             }
 
-            // Determine plan from amount
+            // Determine plan from amount or items array
             $amount = $payload['amount'] ?? $payload['data']['amount'] ?? $payload['payment']['amount'] ?? null;
             $planId = $this->inferPlanFromAmount($amount);
+            
+            // If we have items array, try to extract plan from there
+            if (isset($payload['items']) && is_array($payload['items']) && !empty($payload['items'])) {
+                $item = $payload['items'][0]; // Take the first item
+                $itemName = $item['name'] ?? '';
+                $itemPrice = $item['price'] ?? null;
+                
+                // Try to infer plan from item name
+                if (stripos($itemName, 'basic') !== false) {
+                    $planId = 'basic';
+                } elseif (stripos($itemName, 'pro') !== false) {
+                    $planId = 'pro';
+                } elseif (stripos($itemName, 'enterprise') !== false) {
+                    $planId = 'enterprise';
+                }
+                
+                // Use item price if available
+                if ($itemPrice) {
+                    $amount = $itemPrice;
+                    $planId = $this->inferPlanFromAmount($amount);
+                }
+            }
             
             // Extract invoice ID from various locations
             $invoiceId = $payload['id'] ?? $payload['data']['id'] ?? $payload['invoice_id'] ?? null;
@@ -642,7 +696,8 @@ class SubscriptionController extends Controller
                 'invoice_id' => $invoiceId,
                 'payment_id' => $paymentId,
                 'amount' => $amount,
-                'currency' => $currency
+                'currency' => $currency,
+                'xendit_user_id' => $xenditUserId
             ]);
 
             return $subscription;
@@ -752,27 +807,27 @@ class SubscriptionController extends Controller
      */
     private function sendPaymentConfirmationEmail($subscription)
     {
-        try {
-            $plan = $this->getPlanDetails($subscription->plan_id);
-            
-            Mail::to($subscription->user->email)
-                ->send(new PaymentConfirmationMail($subscription, $plan));
-            
-            Log::info('Payment confirmation email sent successfully', [
-                'user_id' => $subscription->user_id,
-                'user_email' => $subscription->user->email,
+                try {
+                    $plan = $this->getPlanDetails($subscription->plan_id);
+                    
+                    Mail::to($subscription->user->email)
+                        ->send(new PaymentConfirmationMail($subscription, $plan));
+                    
+                    Log::info('Payment confirmation email sent successfully', [
+                        'user_id' => $subscription->user_id,
+                        'user_email' => $subscription->user->email,
                 'subscription_id' => $subscription->id
-            ]);
+                    ]);
 
-        } catch (\Exception $e) {
-            Log::error('Failed to send payment confirmation email', [
-                'user_id' => $subscription->user_id,
-                'user_email' => $subscription->user->email,
-                'subscription_id' => $subscription->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-        }
+                } catch (\Exception $e) {
+                    Log::error('Failed to send payment confirmation email', [
+                        'user_id' => $subscription->user_id,
+                        'user_email' => $subscription->user->email,
+                        'subscription_id' => $subscription->id,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
+                }
     }
 
     /**
